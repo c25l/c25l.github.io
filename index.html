@@ -1,1 +1,179 @@
-Hello etc.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Keyword Co-Occurrence Graph + Articles</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 0; background: #f8f8f8; }
+    #meta { padding: 1em; background: #fff; border-bottom: 1px solid #ddd; }
+    #graph { width: 100%; height: 70vh; border-bottom: 1px solid #ccc; }
+    #articles { padding: 1em; background: #fff; }
+    .cluster-group { margin-bottom: 2em; }
+    .cluster-title { font-weight: bold; margin: 1em 0 0.5em; }
+    .article { margin-bottom: 1em; padding-bottom: 0.5em; border-bottom: 1px solid #eee; display: flex; align-items: flex-start; gap: 0.75em; }
+    .article-icon { flex: 0 0 auto; width: 16px; height: 16px; }
+    .article h4 { margin: 0 0 0.2em 0; font-size: 1em; }
+    .article a { color: #0366d6; text-decoration: none; }
+    .article small { color: #555; display: block; margin-bottom: 0.25em; }
+  </style>
+</head>
+<body>
+  <div id="meta">
+    <strong>Keyword Graph</strong> – Showing latest from <span id="date">(loading...)</span>
+  </div>
+  <svg id="graph"></svg>
+  <div id="articles"></div>
+
+  <script>
+    let allArticles = [];
+    let activeKeyword = null;
+
+    async function loadLatestGraph() {
+      const latestRes = await fetch("latest.json");
+      const latest = await latestRes.json();
+      document.getElementById("date").textContent = latest.date;
+
+      const [graphRes, articlesRes] = await Promise.all([
+        fetch(latest.graph),
+        fetch(latest.articles)
+      ]);
+
+      const graph = await graphRes.json();
+      const articles = await articlesRes.json();
+
+      allArticles = articles;
+      renderGraph(graph);
+      renderArticles(articles);
+    }
+
+    function renderGraph(data) {
+      const width = window.innerWidth;
+      const height = window.innerHeight * 0.7;
+
+      const svg = d3.select("#graph")
+        .attr("width", width)
+        .attr("height", height);
+
+      svg.selectAll("*").remove();
+
+      const simulation = d3.forceSimulation(data.nodes)
+        .force("link", d3.forceLink(data.links).id(d => d.id).distance(50))
+        .force("charge", d3.forceManyBody().strength(-100))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+      const link = svg.append("g")
+        .attr("stroke", "#999")
+        .attr("stroke-opacity", 0.6)
+        .selectAll("line")
+        .data(data.links)
+        .join("line")
+        .attr("stroke-width", d => Math.sqrt(d.value));
+
+      const node = svg.append("g")
+        .attr("stroke", "#fff")
+        .attr("stroke-width", 1.5)
+        .selectAll("circle")
+        .data(data.nodes)
+        .join("circle")
+        .attr("r", d => d.size || 5)
+        .attr("fill", "#69b3a2")
+        .on("click", (event, d) => {
+          activeKeyword = d.id;
+          const filtered = allArticles.filter(article => article.keywords.includes(d.id));
+          renderArticles(filtered);
+        })
+        .call(drag(simulation));
+
+      const label = svg.append("g")
+        .selectAll("text")
+        .data(data.nodes)
+        .join("text")
+        .text(d => d.id)
+        .attr("font-size", 10)
+        .attr("fill", "#333");
+
+      simulation.on("tick", () => {
+        link
+          .attr("x1", d => d.source.x)
+          .attr("y1", d => d.source.y)
+          .attr("x2", d => d.target.x)
+          .attr("y2", d => d.target.y);
+
+        node
+          .attr("cx", d => d.x)
+          .attr("cy", d => d.y);
+
+        label
+          .attr("x", d => d.x + 6)
+          .attr("y", d => d.y + 3);
+      });
+    }
+
+    function renderArticles(articles) {
+      const container = document.getElementById("articles");
+      container.innerHTML = "";
+
+      const clusters = {};
+      for (const article of articles) {
+        const cluster = article.cluster || "Unclustered";
+        if (!clusters[cluster]) clusters[cluster] = [];
+        clusters[cluster].push(article);
+      }
+
+      for (const [cluster, articles] of Object.entries(clusters)) {
+        const group = document.createElement("div");
+        group.className = "cluster-group";
+
+        const title = document.createElement("div");
+        title.className = "cluster-title";
+        title.textContent = `Cluster: ${cluster}`;
+        group.appendChild(title);
+
+        articles.sort((a, b) => b.score - a.score);
+
+        for (const article of articles) {
+          const div = document.createElement("div");
+          div.className = "article";
+
+          const favicon = `https://www.google.com/s2/favicons?sz=16&domain_url=${new URL(article.url).origin}`;
+
+          div.innerHTML = `
+            <img class="article-icon" src="${favicon}" alt="favicon">
+            <div>
+              <h4><a href="${article.url}" target="_blank">${article.title}</a></h4>
+              <small>${article.source} • ${article.date} • Score: ${article.score}</small>
+              <div>Keywords: ${article.keywords.join(", ")}</div>
+              <div>Cluster: ${article.cluster}</div>
+            </div>
+          `;
+          group.appendChild(div);
+        }
+
+        container.appendChild(group);
+      }
+    }
+
+    function drag(simulation) {
+      return d3.drag()
+        .on("start", (event, d) => {
+          if (!event.active) simulation.alphaTarget(0.3).restart();
+          d.fx = d.x;
+          d.fy = d.y;
+        })
+        .on("drag", (event, d) => {
+          d.fx = event.x;
+          d.fy = event.y;
+        })
+        .on("end", (event, d) => {
+          if (!event.active) simulation.alphaTarget(0);
+          d.fx = null;
+          d.fy = null;
+        });
+    }
+
+    loadLatestGraph();
+  </script>
+</body>
+</html>
